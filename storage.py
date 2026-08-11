@@ -3,9 +3,14 @@ import os
 import logging
 from datetime import date, datetime, timedelta
 
-DATA_FILE = "data.json"
-BAK_FILE = "data.json.bak"
-TMP_FILE = "data.json.tmp"
+# Автоматический выбор папки данных под Windows/Linux (Visual Studio)
+DATA_DIR = os.getenv("DATA_DIR", "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+DATA_FILE = os.path.join(DATA_DIR, "data.json")
+BAK_FILE = os.path.join(DATA_DIR, "data.json.bak")
+TMP_FILE = os.path.join(DATA_DIR, "data.json.tmp")
+
 DAILY_TOKEN_LIMIT = 35000
 
 DEFAULT_MASTER_PROMPT = (
@@ -104,15 +109,14 @@ DEFAULT_DATA = {
         "is_paused": False,
         "token_last_date": str(date.today()),
         "tokens_used_today": 0,
-        "token_history": {},           # {"YYYY-MM-DD": tokens} (общая)
-        "scheduled_token_history": {}, # {"YYYY-MM-DD": tokens} (только авто-рассылки)
-        "completed_prompts_today": []  # списки завершенных авто-промптов за сегодня [1, 2]
+        "token_history": {},
+        "scheduled_runs": [],
+        "completed_prompts_today": []
     },
     "users": []
 }
 
 def _ensure_default_keys(data: dict):
-    """Гарантирует наличие всех дефолтных ключей в структуре."""
     data.setdefault("settings", {})
     data.setdefault("users", [])
     for k, v in DEFAULT_DATA["settings"].items():
@@ -120,7 +124,6 @@ def _ensure_default_keys(data: dict):
             data["settings"][k] = v
 
 def load_data() -> dict:
-    """Безопасная загрузка данных с резервным восстановлением при сбоях."""
     if not os.path.exists(DATA_FILE):
         if os.path.exists(BAK_FILE):
             try:
@@ -139,7 +142,7 @@ def load_data() -> dict:
             _ensure_default_keys(data)
             return data
     except Exception as e:
-        logging.error(f"Ошибка при загрузке {DATA_FILE}: {e}. Попытка восстановления из резервной копии.")
+        logging.error(f"Ошибка при загрузке {DATA_FILE}: {e}. Восстановление из бэкапа...")
         if os.path.exists(BAK_FILE):
             try:
                 with open(BAK_FILE, "r", encoding="utf-8") as f:
@@ -153,7 +156,6 @@ def load_data() -> dict:
         return DEFAULT_DATA
 
 def save_data(data: dict):
-    """Атомарное сохранение файла с созданием бэкапа для исключения битых данных."""
     try:
         with open(TMP_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -165,7 +167,7 @@ def save_data(data: dict):
         
         os.replace(TMP_FILE, DATA_FILE)
     except Exception as e:
-        logging.error(f"Ошибка при атомарном сохранении {DATA_FILE}: {e}")
+        logging.error(f"Ошибка при сохранении {DATA_FILE}: {e}")
 
 def _reset_daily_tokens_if_needed(data: dict) -> dict:
     today_str = str(date.today())
@@ -186,52 +188,72 @@ def update_global_settings(new_settings: dict):
     data["settings"].update(new_settings)
     save_data(data)
 
+def init_default_prompts_if_empty():
+    """Заполняет дефолтные промпты только если они не были установлены."""
+    data = load_data()
+    updated = False
+    if not data["settings"].get("prompt_1"):
+        data["settings"]["prompt_1"] = PROMPT_1
+        updated = True
+    if not data["settings"].get("prompt_2"):
+        data["settings"]["prompt_2"] = PROMPT_2
+        updated = True
+    if not data["settings"].get("master_prompt"):
+        data["settings"]["master_prompt"] = DEFAULT_MASTER_PROMPT
+        updated = True
+    if updated:
+        save_data(data)
+
 def register_user(user_id: int):
     data = load_data()
     if user_id not in data.get("users", []):
         data.setdefault("users", []).append(user_id)
         save_data(data)
 
+def unregister_user(user_id: int):
+    data = load_data()
+    users = data.get("users", [])
+    if user_id in users:
+        users.remove(user_id)
+        data["users"] = users
+        save_data(data)
+
+def is_user_registered(user_id: int) -> bool:
+    data = load_data()
+    return user_id in data.get("users", [])
+
 def get_registered_users() -> list:
     data = load_data()
     return data.get("users", [])
 
-
-# --- ЛОГИКА ТОКЕНОВ И РЕЗЕРВА ---
-
 def add_token_usage(tokens: int, is_scheduled: bool = False):
-    """Записывает расход токенов. Разделяет общие токены и токены на рассылки."""
     data = load_data()
     today_str = str(date.today())
     
     current_used = data["settings"].get("tokens_used_today", 0)
     data["settings"]["tokens_used_today"] = current_used + tokens
     
-    # Общая история
     history = data["settings"].setdefault("token_history", {})
     history[today_str] = history.get(today_str, 0) + tokens
 
-    # История только запланированных отчетов (для точного расчета резерва)
     if is_scheduled:
-        sched_history = data["settings"].setdefault("scheduled_token_history", {})
-        sched_history[today_str] = sched_history.get(today_str, 0) + tokens
+        runs = data["settings"].setdefault("scheduled_runs", [])
+        runs.append({"date": today_str, "tokens": tokens})
     
-    # Храним историю за 30 дней
     cutoff_date = date.today() - timedelta(days=30)
     data["settings"]["token_history"] = {
         d: val for d, val in history.items()
         if datetime.strptime(d, "%Y-%m-%d").date() >= cutoff_date
     }
-    if "scheduled_token_history" in data["settings"]:
-        data["settings"]["scheduled_token_history"] = {
-            d: val for d, val in data["settings"]["scheduled_token_history"].items()
-            if datetime.strptime(d, "%Y-%m-%d").date() >= cutoff_date
-        }
+    if "scheduled_runs" in data["settings"]:
+        data["settings"]["scheduled_runs"] = [
+            r for r in data["settings"]["scheduled_runs"]
+            if datetime.strptime(r["date"], "%Y-%m-%d").date() >= cutoff_date
+        ]
     
     save_data(data)
 
 def mark_prompt_completed_today(prompt_num: int):
-    """Отмечает, что запланированный промпт под номером prompt_num успешно выполнился сегодня."""
     data = load_data()
     data = _reset_daily_tokens_if_needed(data)
     completed = data["settings"].get("completed_prompts_today", [])
@@ -241,19 +263,16 @@ def mark_prompt_completed_today(prompt_num: int):
         save_data(data)
 
 def get_30_day_avg_scheduled_tokens() -> int:
-    """Рассчитывает средний расход токенов ИМЕННО НА АВТО-ОТПРАВКИ промптов за последние 30 дней."""
     settings = get_global_settings()
-    sched_history = settings.get("scheduled_token_history", {})
-    if not sched_history:
-        return 0
-    total = sum(sched_history.values())
-    days_count = len(sched_history)
-    return int(total / days_count) if days_count > 0 else 0
+    runs = settings.get("scheduled_runs", [])
+    if runs:
+        total = sum(r.get("tokens", 0) for r in runs)
+        return int(total / len(runs)) if len(runs) > 0 else 0
+    return 0
 
 def get_pending_prompts_today() -> list[int]:
-    """Возвращает список промптов, запланированных на сегодня, но ЕЩЕ НЕ отправленных."""
     settings = get_global_settings()
-    today_weekday = date.today().weekday()  # 0 = Пн, 6 = Вс
+    today_weekday = date.today().weekday()
     
     d1 = settings.get("day_1", 4) % 7
     d2 = settings.get("day_2", 1) % 7
@@ -269,15 +288,11 @@ def get_pending_prompts_today() -> list[int]:
     return pending
 
 def get_reserved_tokens() -> int:
-    """
-    Возвращает размер резерва токенов в дни рассылки.
-    Резерв активен ТОЛЬКО ЕСЛИ на сегодня запланирована рассылка и она еще НЕ выполнена!
-    """
     pending = get_pending_prompts_today()
     if not pending:
         return 0
-    avg_usage = get_30_day_avg_scheduled_tokens()
-    return int(avg_usage * 1.2)
+    avg_per_prompt = get_30_day_avg_scheduled_tokens()
+    return int(len(pending) * avg_per_prompt * 1.2)
 
 def get_token_usage() -> tuple[int, int, int]:
     settings = get_global_settings()
@@ -286,12 +301,6 @@ def get_token_usage() -> tuple[int, int, int]:
     return used, remaining, DAILY_TOKEN_LIMIT
 
 def check_token_limit(is_scheduled: bool = False) -> tuple[bool, str]:
-    """
-    Проверяет лимит токенов.
-    If is_scheduled=True, разрешает использовать весь лимит 35 000.
-    If is_scheduled=False (пользовательский запрос), проверяет лимит с учетом текущего резерва.
-    Если генерация сегодня уже прошла, резерв равен 0!
-    """
     used, _, limit = get_token_usage()
     
     if is_scheduled:
@@ -307,7 +316,7 @@ def check_token_limit(is_scheduled: bool = False) -> tuple[bool, str]:
             reserve_str = f"{reserve:_}".replace("_", " ")
             return False, (
                 f"🔒 Сегодня день авто-рассылки!\n"
-                f"Зарезервировано {reserve_str} токенов под еще не отправленные отчеты (средний расход рассылок + 20%).\n"
+                f"Зарезервировано {reserve_str} токенов под еще не отправленные отчеты (средний расход промпта + 20%).\n"
                 f"Личные запросы временно ограничены до завершения рассылки."
             )
         return False, "🛑 Превышен суточный лимит использования токенов (35 000). Запросы приостановлены до завтра."
@@ -334,7 +343,7 @@ def get_token_stats_text() -> str:
     
     pending = get_pending_prompts_today()
     if pending:
-        status_reserve = f"🔒 Резерв под невыполненную рассылку: {reserve_str} токенов\n"
+        status_reserve = f"🔒 Резерв токенов для рассылки: {reserve_str} токенов\n"
     elif get_global_settings().get("completed_prompts_today"):
         status_reserve = "✅ Запланированная на сегодня рассылка уже выполнена (резерв снят)\n"
     else:
@@ -345,7 +354,7 @@ def get_token_stats_text() -> str:
         f"📊 Использовано сегодня: {used_str} / {limit_str}\n"
         f"💡 Осталось на сегодня: {rem_str}\n"
         f"📈 Прогресс: {progress_bar} ({percent:.1f}%)\n\n"
-        f"📅 Средний расход на авто-отчеты (30 дней): {avg_sched_str} ток./день\n"
+        f"📅 Средний расход на авто-отчет (30 дней): {avg_sched_str} ток./промпт\n"
         f"{status_reserve}\n"
         f"ℹ️ Дневной лимит (35 000 токенов) обнуляется автоматически каждые сутки в 00:00."
     )
