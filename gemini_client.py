@@ -17,13 +17,13 @@ def clean_markdown(text: str) -> str:
     return text
 
 class GeminiWrapper:
+    # Исправлена модель на рабочую gemini-2.5-flash
     def __init__(self, api_key: str, model_name: str = "gemini-3.6-flash"):
         self.client = genai.Client(api_key=api_key)
         self.model_name = model_name
         self.google_search_tool = types.Tool(google_search=types.GoogleSearch())
 
     async def generate(self, prompt: str, is_scheduled: bool = False) -> str:
-        """Отправляет запрос в Gemini API с учетом Мастер-промпта и резерва токенов."""
         can_proceed, error_msg = check_token_limit(is_scheduled=is_scheduled)
         if not can_proceed:
             raise RuntimeError(error_msg)
@@ -38,7 +38,7 @@ class GeminiWrapper:
         search_config = types.GenerateContentConfig(**config_kwargs)
 
         now = datetime.now()
-        current_date_str = now.strftime("%d.%m.%Y (%A)")
+        current_date_str = now.strftime("%d.%m.%Y")
         contextual_prompt = (
             f"ТЕКУЩАЯ ТОЧНАЯ СЕГОДНЯШНЯЯ ДАТА: {current_date_str}.\n\n"
             f"ЗАПРОС ПОЛЬЗОВАТЕЛЯ:\n{prompt}"
@@ -99,7 +99,7 @@ class GeminiWrapper:
             raise RuntimeError(f"Не удалось получить ответ от Gemini: {e}")
 
 def split_message(text: str, max_length: int = 4000) -> List[str]:
-    """Разбивает длинный текст на части до max_length символов."""
+    """Безопасно разбивает длинный текст на части."""
     if len(text) <= max_length:
         return [text]
     
@@ -110,9 +110,9 @@ def split_message(text: str, max_length: int = 4000) -> List[str]:
             break
         
         split_at = text.rfind("\n", 0, max_length)
-        if split_at == -1:
+        if split_at <= 0:
             split_at = text.rfind(" ", 0, max_length)
-            if split_at == -1:
+            if split_at <= 0:
                 split_at = max_length
         
         parts.append(text[:split_at].strip())
