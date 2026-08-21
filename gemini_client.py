@@ -1,29 +1,26 @@
+import os
 import logging
 import asyncio
-import re
 from datetime import datetime
 from typing import List
 from google import genai
 from google.genai import types
+from aiogram import Bot
+from aiogram.methods import SendRichMessage
+from aiogram.types import InputRichMessage
 
 from storage import check_token_limit, add_token_usage, get_global_settings
-
-def clean_markdown(text: str) -> str:
-    """Очищает текст от символов разметки Markdown, сохраняя структуру отступов."""
-    text = re.sub(r'#+\s*', '', text)
-    text = re.sub(r'\*+', '', text)
-    text = re.sub(r'_+', '', text)
-    text = re.sub(r'~+', '', text)
-    return text
+from formatter import TextFormatter
 
 class GeminiWrapper:
-    # Исправлена модель на рабочую gemini-2.5-flash
-    def __init__(self, api_key: str, model_name: str = "gemini-3.6-flash"):
+    def __init__(self, api_key: str, model_name: str = None):
         self.client = genai.Client(api_key=api_key)
-        self.model_name = model_name
+        self.model_name = model_name or "gemini-3.6-flash"
         self.google_search_tool = types.Tool(google_search=types.GoogleSearch())
+        self.formatter = TextFormatter()
 
     async def generate(self, prompt: str, is_scheduled: bool = False) -> str:
+        """Отправляет запрос в Gemini API, а затем красиво форматирует результат."""
         can_proceed, error_msg = check_token_limit(is_scheduled=is_scheduled)
         if not can_proceed:
             raise RuntimeError(error_msg)
@@ -38,7 +35,7 @@ class GeminiWrapper:
         search_config = types.GenerateContentConfig(**config_kwargs)
 
         now = datetime.now()
-        current_date_str = now.strftime("%d.%m.%Y")
+        current_date_str = now.strftime("%d.%m.%Y (%A)")
         contextual_prompt = (
             f"ТЕКУЩАЯ ТОЧНАЯ СЕГОДНЯШНЯЯ ДАТА: {current_date_str}.\n\n"
             f"ЗАПРОС ПОЛЬЗОВАТЕЛЯ:\n{prompt}"
@@ -50,6 +47,8 @@ class GeminiWrapper:
                 if total_tokens > 0:
                     add_token_usage(total_tokens, is_scheduled=is_scheduled)
 
+        raw_result = ""
+
         try:
             response = await self.client.aio.models.generate_content(
                 model=self.model_name,
@@ -57,7 +56,8 @@ class GeminiWrapper:
                 config=search_config
             )
             _record_tokens(response)
-            return clean_markdown(response.text or "Пустой ответ от Gemini API.")
+            raw_result = response.text or "Пустой ответ от Gemini API."
+
         except Exception as e:
             error_str = str(e)
 
@@ -76,12 +76,12 @@ class GeminiWrapper:
                         config=fallback_config
                     )
                     _record_tokens(response)
-                    return clean_markdown(response.text or "Пустой ответ от Gemini API.")
+                    raw_result = response.text or "Пустой ответ от Gemini API."
                 except Exception as e2:
                     logging.error(f"Ошибка при генерации без поиска: {e2}")
                     raise RuntimeError(f"Не удалось получить ответ от Gemini: {e2}")
 
-            if "503" in error_str or "UNAVAILABLE" in error_str:
+            elif "503" in error_str or "UNAVAILABLE" in error_str:
                 for attempt in range(2):
                     await asyncio.sleep(2)
                     try:
@@ -91,15 +91,23 @@ class GeminiWrapper:
                             config=search_config
                         )
                         _record_tokens(response)
-                        return clean_markdown(response.text or "Пустой ответ от Gemini API.")
+                        raw_result = response.text or "Пустой ответ от Gemini API."
+                        break
                     except Exception:
                         continue
+            else:
+                logging.error(f"Ошибка Gemini API: {e}")
+                raise RuntimeError(f"Не удалось получить ответ от Gemini: {e}")
 
-            logging.error(f"Ошибка Gemini API: {e}")
-            raise RuntimeError(f"Не удалось получить ответ от Gemini: {e}")
+        # Стадия переформатирования
+        if raw_result:
+            formatted_result = await self.formatter.reformat(raw_result)
+            return formatted_result
+            
+        return raw_result
 
-def split_message(text: str, max_length: int = 4000) -> List[str]:
-    """Безопасно разбивает длинный текст на части."""
+def split_message(text: str, max_length: int = 30000) -> List[str]:
+    """Разбивает длинный текст на части до max_length символов."""
     if len(text) <= max_length:
         return [text]
     
@@ -110,12 +118,36 @@ def split_message(text: str, max_length: int = 4000) -> List[str]:
             break
         
         split_at = text.rfind("\n", 0, max_length)
-        if split_at <= 0:
+        if split_at == -1:
             split_at = text.rfind(" ", 0, max_length)
-            if split_at <= 0:
+            if split_at == -1:
                 split_at = max_length
         
         parts.append(text[:split_at].strip())
         text = text[split_at:].strip()
         
     return parts
+
+async def send_rich_text(bot: Bot, chat_id: int, text: str):
+    """
+    Отправляет отформатированный текст через Telegram API sendRichMessage.
+    Если sendRichMessage не сработал — нарезает текст по 4000 символов под лимиты sendMessage.
+    """
+    chunks_30k = split_message(text, max_length=30000)
+
+    for chunk in chunks_30k:
+        try:
+            await bot(SendRichMessage(
+                chat_id=chat_id,
+                rich_message=InputRichMessage(markdown=chunk)
+            ))
+        except Exception as e:
+            logging.warning(f"⚠️ sendRichMessage не сработал ({e!r}). Нарезаем по 4000 символов под sendMessage...")
+
+            sub_chunks = split_message(chunk, max_length=4000)
+            for sub_chunk in sub_chunks:
+                try:
+                    await bot.send_message(chat_id, sub_chunk, parse_mode="Markdown")
+                except Exception as e2:
+                    logging.warning(f"⚠️ Ошибка с разметкой Markdown ({e2}), отправка простым текстом...")
+                    await bot.send_message(chat_id, sub_chunk)
