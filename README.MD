@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![aiogram](https://img.shields.io/badge/aiogram-3.30%2B-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://docs.aiogram.dev/)
-[![Gemini AI](https://img.shields.io/badge/Google%20Gemini-3.7%20%26%203.5-8E7CC3?style=for-the-badge&logo=google-gemini&logoColor=white)](https://ai.google.dev/)
+[![Gemini AI](https://img.shields.io/badge/Google%20Gemini-3.6%20%26%203.5-8E7CC3?style=for-the-badge&logo=google-gemini&logoColor=white)](https://ai.google.dev/)
 [![APScheduler](https://img.shields.io/badge/APScheduler-3.10-green?style=for-the-badge)](https://apscheduler.readthedocs.io/)
 
 [Возможности](#-возможности-бота) • [Структура меню](#-структура-меню) • [Аналитические отчеты](#-аналитические-отчеты) • [Быстрый запуск](#-быстрый-запуск) • [Архитектура](#-архитектура-проекта) • [Переменные окружения](#️-переменные-окружения-env)
