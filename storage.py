@@ -2,9 +2,11 @@ import json
 import os
 import logging
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
-# Автоматический выбор папки данных под Windows/Linux (Visual Studio)
-DATA_DIR = os.getenv("DATA_DIR", "data")
+MSK_TZ = ZoneInfo("Europe/Moscow")
+
+DATA_DIR = os.getenv("DATA_DIR", "/app/data" if os.path.exists("/app/data") else "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 DATA_FILE = os.path.join(DATA_DIR, "data.json")
@@ -60,7 +62,8 @@ DEFAULT_MASTER_PROMPT = (
     "Правила фактологической точности:\n"
     "Не выдумывай нормы, значения нормативов, номера документов и даты. При ссылках на регуляторные требования указывай документ, пункт и дату редакции.\n"
     "Запрещено использовать символы разметки Markdown (решетки #, звездочки *).\n\n"
-    "Приоритет — подготовка готового решения для казначейства: что сделать, каким инструментом, в каком объёме, какой норматив или лимит будет ограничивающим и какие побочные эффекты возникнут."
+    "Приоритет — подготовка готового решения для казначейства: что сделать, каким инструментом, в каком объёме, какой норматив или лимит будет ограничивающим и какие побочные эффекты возникнут.\n\n"
+    "Контекст банка: ответ готовится для банка, отнесённого Банком России к системно значимым кредитным организациям (СЗКО). Учитывай применимые именно к СЗКО повышенные требования (в частности, надбавки к нормативам достаточности капитала, буфер за системную значимость, требования к ВЛА и планам восстановления финансовой устойчивости) и указывай, где это отличает подход СЗКО от прочих банков."
 )
 
 PROMPT_1 = (
@@ -96,14 +99,69 @@ PROMPT_2 = (
     "- Пиши сухим аналитическим языком без вводной «воды»."
 )
 
+PROMPT_3 = (
+    "Составь максимально полный и достоверный хронологический график плановых выплат (погашений и оферт) по корпоративным юаневым облигациям (CNY), торгующимся на Московской бирже (Мосбиржа).\n\n"
+    "КРИТЕРИИ ОТБОРА:\n"
+    "1. Валюта: CNY (китайский юань).\n"
+    "2. Рынок: Российский локальный рынок (Мосбиржа).\n"
+    "3. Минимальный объем эмиссии: Более 1 млрд CNY (по первоначальному или текущему номиналу).\n"
+    "4. Период: начиная с сегодняшней даты на 18 месяцев вперед.\n\n"
+    "ЖЕСТКИЕ ТРЕБОВАНИЯ К УЧЕТУ БУМАГ И СОБЫТИЙ (ВАЖНО!):\n"
+    "1. Учитывай КАК плановые окончательные погашения, ТАК И ВСЕ оферты (как Put-оферты на выкуп, так и Call-оферты).\n"
+    "2. ОБЯЗАТЕЛЬНО включай длинные выпуски крупнейших эмитентов (в частности, ПАО «НК «Роснефть»», ПАО «ГМК «Норильский никель»» и др.), у которых дата окончательного погашения находится в далёком будущем (2030–2035 гг.), НО промежуточная Put-оферта выпадает на запрашиваемый период.\n"
+    "3. Перепроверь присутствие всех ключевых юаневых эмитентов: Роснефть, РУСАЛ, Норникель, Газпром нефть, Газпром капитал, Полюс, Металлоинвест, ФосАгро, ЭН+ ГИДРО, Группа Черкизово и др.\n"
+    "4. ISIN-коды должны быть ТОЛЬКО локальными российскими кодами формата RU000A... (категорически запрещено использовать вымышленные европейские XS-коды).\n"
+    "5. Если по выпуску ранее проводились оферты и часть объёма выкуплена, укажи первоначальный объем и сделай оговорку о фактическом объёме в обращении.\n\n"
+    "ФОРМАТ ВЫВОДА:\n"
+    "1. Сводная таблица со столбцами:\n"
+    "   - Дата события (в формате ДД.ММ.ГГГГ)\n"
+    "   - Тип события (Погашение / Оферта Put / Оферта Call)\n"
+    "   - Эмитент и выпуск (Полное название, ISIN формата RU000A... и тикер на Мосбирже)\n"
+    "   - Объем эмиссии (в млрд CNY)\n"
+    "   - Текущий купон (% годовых и периодичность выплат)\n"
+    "   - Дата окончательного погашения (заполняется, только если событие — оферта)\n\n"
+    "2. Отсортируй таблицу строго по дате события от ближайших к дальним.\n\n"
+    "3. Под таблицей приведи:\n"
+    "   - Краткую сводную таблицу: общее количество событий и суммарный объем (в млрд CNY) отдельно по Погашениям и отдельно по Офертам (Put/Call).\n"
+    "   - Краткий аналитический вывод о том, у каких эмитентов выпадают наибольшие пиковые объемы выплат и оферт в данный период."
+)
+
+PROMPT_4 = (
+    "Подготовь ежемесячную справку для КУАП (Комитета по управлению активами и пассивами) о состоянии рублёвой и юаневой ликвидности за прошедший месяц.\n\n"
+    "ФОРМАТ ОТВЕТА:\n\n"
+    "1. «Резюме для КУАП» — 7 пронумерованных пунктов, каждый с пометкой в скобках (Факт / Оценка / Прогноз):\n"
+    "   1) Текущее состояние рублёвого и юаневого секторов ликвидности (профицит/дефицит, масштаб в трлн руб. и оценка юаневого дефицита).\n"
+    "   2) Динамика с начала месяца по обоим сегментам (изменение дефицита/профицита в рублях, изменение стоимости юаневого O/N-фондирования).\n"
+    "   3) Основные драйверы рублёвой ликвидности (спрос на наличность, остатки банков на корсчетах в ЦБ, бюджетные потоки).\n"
+    "   4) Основные драйверы юаневой ликвидности (операции Минфина по бюджетному правилу, лимиты валютных свопов ЦБ, корреспондентская инфраструктура).\n"
+    "   5) Ключевые риски на ближайший месяц (пики налоговых платежей, волатильность базиса юаневых свопов, внешние ограничения).\n"
+    "   6) Вероятная динамика ставок RUONIA и стоимости юаневого фондирования на горизонте месяца.\n"
+    "   7) Конкретные рекомендации банку (управление подушкой ликвидности, лимиты по открытым CNY-позициям, действия казначейства).\n\n"
+    "2. «Таблица ключевых индикаторов» со столбцами: Показатель | Значение на начало месяца (дата) | Последнее значение (дата) | Изменение | Интерпретация.\n"
+    "   Обязательно включи как минимум: RUONIA (% годовых), структурный дефицит/профицит RUB (трлн руб.), ставку юаневого свопа CNY_TODTOM / RUSFAR CNY (% годовых), официальный курс CNY/RUB.\n\n"
+    "3. «Рублёвая и юаневая ликвидность» — 2 пронумерованных пункта (Факт): отдельно про действия Банка России на рублёвом рынке (аукционы репо «тонкой настройки», депозитные операции) и отдельно про юаневый рынок (лимиты свопов, зависимость от притока экспортной выручки).\n\n"
+    "4. «Источники данных» — пронумерованный список использованных источников (Банк России, Московская биржа, Минфин России, деловые СМИ) с указанием дат данных.\n\n"
+    "5. «Календарь ближайших значимых дат» — маркированный список ключевых дат следующего месяца (налоговые периоды, завершение бюджетных операций Минфина, заседание Совета директоров Банка России по ключевой ставке) с краткой пометкой риска для ликвидности.\n\n"
+    "ТРЕБОВАНИЯ:\n"
+    "- Указывай точные цифры и даты, избегай общих формулировок без конкретики.\n"
+    "- Пиши сухим аналитическим языком, без вводной «воды».\n"
+    "- Ответ готовится для системно значимой кредитной организации (СЗКО) — учитывай масштаб операций и повышенные регуляторные требования, применимые именно к СЗКО."
+)
+
 DEFAULT_DATA = {
     "settings": {
         "prompt_1": PROMPT_1,
-        "day_1": 4,       # Пятница
+        "day_1": 4,       # Пятница (день недели 0..6)
         "time_1": "13:30",
         "prompt_2": PROMPT_2,
-        "day_2": 1,       # Вторник
+        "day_2": 1,       # Вторник (день недели 0..6)
         "time_2": "14:00",
+        "prompt_3": PROMPT_3,
+        "day_3": 1,       # 1-е число месяца (1..28)
+        "time_3": "15:00",
+        "prompt_4": PROMPT_4,
+        "day_4": 5,       # 5-е число месяца (1..28)
+        "time_4": "16:00",
         "master_prompt": DEFAULT_MASTER_PROMPT,
         "timezone": "Europe/Moscow",
         "is_paused": False,
@@ -113,12 +171,15 @@ DEFAULT_DATA = {
         "scheduled_runs": [],
         "completed_prompts_today": []
     },
-    "users": []
+    "users": [],
+    "users_info": {}
 }
+
 
 def _ensure_default_keys(data: dict):
     data.setdefault("settings", {})
     data.setdefault("users", [])
+    data.setdefault("users_info", {})
     for k, v in DEFAULT_DATA["settings"].items():
         if k not in data["settings"]:
             data["settings"][k] = v
@@ -169,14 +230,30 @@ def save_data(data: dict):
     except Exception as e:
         logging.error(f"Ошибка при сохранении {DATA_FILE}: {e}")
 
+def _get_msk_today_str() -> str:
+    """Текущая дата по московскому времени (МСК), независимо от часового пояса сервера."""
+    return str(datetime.now(MSK_TZ).date())
+
 def _reset_daily_tokens_if_needed(data: dict) -> dict:
-    today_str = str(date.today())
+    """Ленивый сброс: срабатывает при любом обращении к настройкам, если по МСК уже наступили новые сутки."""
+    today_str = _get_msk_today_str()
     if data["settings"].get("token_last_date") != today_str:
         data["settings"]["token_last_date"] = today_str
         data["settings"]["tokens_used_today"] = 0
         data["settings"]["completed_prompts_today"] = []
         save_data(data)
     return data
+
+def force_reset_daily_tokens():
+    """Принудительный сброс суточного лимита токенов. Вызывается планировщиком строго в 00:00 по МСК,
+    чтобы лимит гарантированно обнулялся для всех пользователей вовремя, даже если никто не открывал бота."""
+    data = load_data()
+    today_str = _get_msk_today_str()
+    data["settings"]["token_last_date"] = today_str
+    data["settings"]["tokens_used_today"] = 0
+    data["settings"]["completed_prompts_today"] = []
+    save_data(data)
+    logging.info("🔄 Суточный лимит токенов сброшен по расписанию (00:00 МСК).")
 
 def get_global_settings() -> dict:
     data = load_data()
@@ -189,7 +266,6 @@ def update_global_settings(new_settings: dict):
     save_data(data)
 
 def init_default_prompts_if_empty():
-    """Заполняет дефолтные промпты только если они не были установлены."""
     data = load_data()
     updated = False
     if not data["settings"].get("prompt_1"):
@@ -198,17 +274,38 @@ def init_default_prompts_if_empty():
     if not data["settings"].get("prompt_2"):
         data["settings"]["prompt_2"] = PROMPT_2
         updated = True
+    if not data["settings"].get("prompt_3"):
+        data["settings"]["prompt_3"] = PROMPT_3
+        updated = True
+    if not data["settings"].get("prompt_4"):
+        data["settings"]["prompt_4"] = PROMPT_4
+        updated = True
     if not data["settings"].get("master_prompt"):
         data["settings"]["master_prompt"] = DEFAULT_MASTER_PROMPT
         updated = True
     if updated:
         save_data(data)
 
-def register_user(user_id: int):
+def register_user(user_id: int, username: str = None, first_name: str = None, last_name: str = None):
+    """Регистрирует пользователя в рассылке и сохраняет его данные (username/имя) для последующего отслеживания подписчиков."""
     data = load_data()
     if user_id not in data.get("users", []):
         data.setdefault("users", []).append(user_id)
-        save_data(data)
+
+    info = data.setdefault("users_info", {})
+    entry = info.get(str(user_id), {})
+    if username is not None:
+        entry["username"] = username
+    if first_name is not None:
+        entry["first_name"] = first_name
+    if last_name is not None:
+        entry["last_name"] = last_name
+    if "subscribed_at" not in entry:
+        entry["subscribed_at"] = str(date.today())
+    info[str(user_id)] = entry
+    data["users_info"] = info
+
+    save_data(data)
 
 def unregister_user(user_id: int):
     data = load_data()
@@ -225,6 +322,23 @@ def is_user_registered(user_id: int) -> bool:
 def get_registered_users() -> list:
     data = load_data()
     return data.get("users", [])
+
+def get_subscribers_info() -> list[dict]:
+    """Возвращает список подписчиков (только тех, кто сейчас подписан) с их данными: id, username, имя, дата подписки."""
+    data = load_data()
+    users = data.get("users", [])
+    info = data.get("users_info", {})
+    result = []
+    for uid in users:
+        meta = info.get(str(uid), {})
+        result.append({
+            "id": uid,
+            "username": meta.get("username"),
+            "first_name": meta.get("first_name"),
+            "last_name": meta.get("last_name"),
+            "subscribed_at": meta.get("subscribed_at"),
+        })
+    return result
 
 def add_token_usage(tokens: int, is_scheduled: bool = False):
     data = load_data()
@@ -272,10 +386,14 @@ def get_30_day_avg_scheduled_tokens() -> int:
 
 def get_pending_prompts_today() -> list[int]:
     settings = get_global_settings()
-    today_weekday = date.today().weekday()
+    today = date.today()
+    today_weekday = today.weekday()
+    today_day_of_month = today.day
     
     d1 = settings.get("day_1", 4) % 7
     d2 = settings.get("day_2", 1) % 7
+    d3 = settings.get("day_3", 1)
+    d4 = settings.get("day_4", 5)
     
     completed = settings.get("completed_prompts_today", [])
     pending = []
@@ -284,6 +402,10 @@ def get_pending_prompts_today() -> list[int]:
         pending.append(1)
     if today_weekday == d2 and 2 not in completed:
         pending.append(2)
+    if today_day_of_month == d3 and 3 not in completed:
+        pending.append(3)
+    if today_day_of_month == d4 and 4 not in completed:
+        pending.append(4)
 
     return pending
 
@@ -292,7 +414,7 @@ def get_reserved_tokens() -> int:
     if not pending:
         return 0
     avg_per_prompt = get_30_day_avg_scheduled_tokens()
-    return int(len(pending) * avg_per_prompt * 1.2)
+    return int(len(pending) * (avg_per_prompt or 10000) * 1.25)
 
 def get_token_usage() -> tuple[int, int, int]:
     settings = get_global_settings()
@@ -316,7 +438,7 @@ def check_token_limit(is_scheduled: bool = False) -> tuple[bool, str]:
             reserve_str = f"{reserve:_}".replace("_", " ")
             return False, (
                 f"🔒 Сегодня день авто-рассылки!\n"
-                f"Зарезервировано {reserve_str} токенов под еще не отправленные отчеты (средний расход промпта + 20%).\n"
+                f"Зарезервировано {reserve_str} токенов под еще не отправленные отчеты (средний расход промпта + 25%).\n"
                 f"Личные запросы временно ограничены до завершения рассылки."
             )
         return False, "🛑 Превышен суточный лимит использования токенов (35 000). Запросы приостановлены до завтра."
@@ -356,5 +478,5 @@ def get_token_stats_text() -> str:
         f"📈 Прогресс: {progress_bar} ({percent:.1f}%)\n\n"
         f"📅 Средний расход на авто-отчет (30 дней): {avg_sched_str} ток./промпт\n"
         f"{status_reserve}\n"
-        f"ℹ️ Дневной лимит (35 000 токенов) обнуляется автоматически каждые сутки в 00:00."
+        f"ℹ️ Дневной лимит (35 000 токенов) обнуляется автоматически каждые сутки в 00:00 по московскому времени (МСК)."
     )
