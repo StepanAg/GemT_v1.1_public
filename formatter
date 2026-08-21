@@ -1,0 +1,79 @@
+import os
+import logging
+from google import genai
+from google.genai import types
+
+SYSTEM_INSTRUCTION = (
+    "Ты форматируешь текст для Telegram Rich Message. "
+    "Не меняй смысл, не добавляй новых фактов и не сокращай контент. "
+    "Переоформи входной текст в Markdown: заголовки ## / ###, **жирный** для "
+    "ключевых терминов и цифр, таблицы |col|col| с разделителем |---|---| там, "
+    "где в тексте есть перечисления с параметрами/сравнения (только если можешь "
+    "построить таблицу полностью и корректно — иначе оставь обычным списком), "
+    "маркированные или нумерованные списки для перечислений. "
+    "В ОТВЕТЕ ДОЛЖЕН БЫТЬ ТОЛЬКО САМ ПЕРЕФОРМАТИРОВАННЫЙ ТЕКСТ. "
+    "Запрещено: рассуждения вслух, самопроверки, фразы вида 'Section', "
+    "'Review against constraints', чек-листы соответствия инструкциям, любые "
+    "комментарии о процессе форматирования. Без HTML, без вступлений от себя."
+)
+
+class TextFormatter:
+    def __init__(self):
+        self.formatter_key = os.getenv("FORMATTER_GEMINI_API_KEY")
+        self.base_key = os.getenv("GEMINI_API_KEY")
+        self.model = os.getenv("FORMATTER_GEMINI_MODEL", "gemini-3.5-flash")
+
+        # 1. Основной клиент для форматирования (второй ключ)
+        self.formatter_client = genai.Client(api_key=self.formatter_key) if self.formatter_key else None
+        # 2. Резервный клиент (базовый ключ)
+        self.base_client = genai.Client(api_key=self.base_key) if self.base_key else None
+
+    async def _execute_formatting(self, client: genai.Client, raw_text: str) -> str:
+        """Вспомогательная функция выполнения запроса форматирования."""
+        config = types.GenerateContentConfig(
+            system_instruction=SYSTEM_INSTRUCTION,
+            thinking_config=types.ThinkingConfig(thinking_level="low"),
+        )
+        
+        response = await client.aio.models.generate_content(
+            model=self.model,
+            contents=raw_text,
+            config=config
+        )
+
+        if response and response.candidates:
+            candidate = response.candidates[0]
+            if candidate.finish_reason != "STOP":
+                logging.warning(f"⚠️ Форматирование: ответ обрезан, finish_reason={candidate.finish_reason}")
+
+            parts = candidate.content.parts if candidate.content else []
+            final_text = "".join(
+                part.text for part in parts if part.text and not getattr(part, "thought", False)
+            )
+            if final_text.strip():
+                return final_text
+
+        return response.text or raw_text
+
+    async def reformat(self, raw_text: str) -> str:
+        """Форматирует текст. При ошибке второго ключа автоматически переключается 
+        на базовый API-ключ Gemini."""
+        if not raw_text or not raw_text.strip():
+            return raw_text
+
+        # Этап 1: Пробуем отформатировать через второй API-ключ (если он установлен)
+        if self.formatter_client:
+            try:
+                return await self._execute_formatting(self.formatter_client, raw_text)
+            except Exception as e:
+                logging.warning(f"⚠️ Второй API-ключ не ответил ({e}). Переносим форматирование на базовый API-ключ...")
+
+        # Этап 2: Фолбэк — выполняем форматирование через базовый API-ключ
+        if self.base_client:
+            try:
+                return await self._execute_formatting(self.base_client, raw_text)
+            except Exception as e:
+                logging.error(f"⚠️ Базовый API-ключ также не смог отформатировать текст: {e}")
+
+        # Крайний случай: если оба API не смогли отформировать, отдаем сырой текст
+        return raw_text
