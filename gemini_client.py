@@ -20,7 +20,7 @@ class GeminiWrapper:
         self.formatter = TextFormatter()
 
     def _extract_grounding_sources(self, response) -> str:
-        """Извлекает реальные проверенные ссылки из метаданных поиска Google."""
+        """Извлекает реальные валидные ссылки из метаданных Google Search."""
         try:
             if not response or not response.candidates:
                 return ""
@@ -90,6 +90,11 @@ class GeminiWrapper:
             )
             _record_tokens(response)
             raw_result = response.text or "Пустой ответ от Gemini API."
+            
+            # Извлекаем и добавляем реальные проверенные ссылки Google Search
+            sources = self._extract_grounding_sources(response)
+            if sources:
+                raw_result += sources
 
         except Exception as e:
             error_str = str(e)
@@ -125,6 +130,9 @@ class GeminiWrapper:
                         )
                         _record_tokens(response)
                         raw_result = response.text or "Пустой ответ от Gemini API."
+                        sources = self._extract_grounding_sources(response)
+                        if sources:
+                            raw_result += sources
                         break
                     except Exception:
                         continue
