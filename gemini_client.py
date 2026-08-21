@@ -19,6 +19,39 @@ class GeminiWrapper:
         self.google_search_tool = types.Tool(google_search=types.GoogleSearch())
         self.formatter = TextFormatter()
 
+    def _extract_grounding_sources(self, response) -> str:
+        """Извлекает реальные проверенные ссылки из метаданных поиска Google."""
+        try:
+            if not response or not response.candidates:
+                return ""
+            
+            candidate = response.candidates[0]
+            metadata = getattr(candidate, "grounding_metadata", None)
+            if not metadata:
+                return ""
+
+            chunks = getattr(metadata, "grounding_chunks", [])
+            if not chunks:
+                return ""
+
+            sources = []
+            seen_uris = set()
+
+            for chunk in chunks:
+                web = getattr(chunk, "web", None)
+                if web:
+                    uri = getattr(web, "uri", None)
+                    title = getattr(web, "title", None) or uri
+                    if uri and uri not in seen_uris:
+                        seen_uris.add(uri)
+                        sources.append(f"• [{title}]({uri})")
+
+            if sources:
+                return "\n\n🔗 **Первоисточники из Google Search:**\n" + "\n".join(sources[:7])
+        except Exception as e:
+            logging.warning(f"⚠️ Не удалось извлечь grounding sources: {e}")
+        return ""
+
     async def generate(self, prompt: str, is_scheduled: bool = False) -> str:
         """Отправляет запрос в Gemini API, а затем красиво форматирует результат."""
         can_proceed, error_msg = check_token_limit(is_scheduled=is_scheduled)
