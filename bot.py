@@ -139,8 +139,11 @@ def get_days_inline_keyboard(prefix: str = "set_day_") -> InlineKeyboardMarkup:
     buttons = []
     for idx, day_name in enumerate(DAY_NAMES):
         buttons.append([InlineKeyboardButton(text=day_name, callback_data=f"{prefix}{idx}")])
-    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_fsm")])
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data=cancel_fsm_cb(prefix))])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def cancel_fsm_cb(prefix: str) -> str:
+    return "cancel_fsm"
 
 def get_status_inline_keyboard() -> InlineKeyboardMarkup:
     buttons = [
@@ -216,7 +219,7 @@ async def render_master_prompt_menu(event: Message | CallbackQuery):
     text = (
         f"🧙‍♂️ <b>Управление Мастер-промптом (System Instruction):</b>\n\n"
         f"<b>Текущий Мастер-промпт:</b>\n{status_mp}\n\n"
-        f"ℹ️ Мастер-промпт задает роль и правила для Gemini AI, которые применяются ко всем входящим запросам."
+        f"ℹ️ Мастер-промпт задает роль и правила для Gemini AI, которые применяются только к запросам через кнопку «💬 Спросить у Gemini AI»."
     )
 
     target = event.message if isinstance(event, CallbackQuery) else event
@@ -356,7 +359,8 @@ async def _run_prompt_now(message: Message, prompt_key: str, title: str):
     user_id = message.from_user.id
     await message.answer(f"⏳ Запрашиваю ответ по промпту «{title}»... (напишите /stop для отмены)")
     
-    task = asyncio.create_task(gemini.generate(prompt))
+    # Готовые промпты запускаются без мастер-промпта (use_master_prompt=False)
+    task = asyncio.create_task(gemini.generate(prompt, use_master_prompt=False))
     active_generations[user_id] = task
     try:
         res = await task
@@ -400,7 +404,8 @@ async def ask_gemini_finish(message: Message, state: FSMContext):
     
     await message.answer("⏳ Думаю над ответом... (напишите /stop для отмены)")
     
-    task = asyncio.create_task(gemini.generate(user_question))
+    # Произвольный вопрос использует Мастер-промпт (use_master_prompt=True)
+    task = asyncio.create_task(gemini.generate(user_question, use_master_prompt=True))
     active_generations[user_id] = task
 
     try:
