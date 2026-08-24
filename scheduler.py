@@ -128,7 +128,8 @@ class BotScheduler:
 
         logging.info(f"Запуск рассылки {prompt_title} для {len(users)} пользователей.")
         try:
-            response_text = await self.gemini.generate(prompt, is_scheduled=True)
+            # Для готовых авто-рассылок мастер-промпт отключен (use_master_prompt=False)
+            response_text = await self.gemini.generate(prompt, is_scheduled=True, use_master_prompt=False)
             mark_prompt_completed_today(prompt_num)
             
             for user_id in users:
