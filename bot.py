@@ -27,9 +27,10 @@ from storage import (
     is_user_registered,
     get_registered_users,
     get_token_stats_text,
-    init_default_prompts_if_empty
+    sync_prompts_from_code
 )
 from gemini_client import GeminiWrapper, split_message, send_rich_text
+from formatter import SYSTEM_INSTRUCTION as FORMATTER_SYSTEM_INSTRUCTION
 from scheduler import BotScheduler, DAY_NAMES
 
 logging.basicConfig(
@@ -128,6 +129,7 @@ def get_cancel_inline_keyboard(callback_data: str = "cancel_fsm") -> InlineKeybo
 def get_master_prompt_inline_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="✏️ Изменить Мастер-промпт", callback_data="master_prompt_edit")],
+        [InlineKeyboardButton(text="🎨 Посмотреть промпт форматтера", callback_data="show_full_fmt")],
         [InlineKeyboardButton(text="❌ Очистить (Сделать пустым)", callback_data="master_prompt_clear")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_master_prompt")]
     ]
@@ -143,15 +145,16 @@ def get_days_inline_keyboard(prefix: str = "set_day_") -> InlineKeyboardMarkup:
 def get_status_inline_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [
-            InlineKeyboardButton(text="📌 Нормативный", callback_data="show_full_p1"),
-            InlineKeyboardButton(text="📌 Юаневый", callback_data="show_full_p2")
+            InlineKeyboardButton(text="📌 1W ликвидность", callback_data="show_full_p1"),
+            InlineKeyboardButton(text="📌 1W CNY", callback_data="show_full_p2")
         ],
         [
             InlineKeyboardButton(text="📌 Погашения CNY", callback_data="show_full_p3"),
             InlineKeyboardButton(text="📌  1M КУАП", callback_data="show_full_p4")
         ],
         [
-            InlineKeyboardButton(text="🧙‍♂️ Мастер-промпт", callback_data="show_full_mp")
+            InlineKeyboardButton(text="🧙‍♂️ Мастер-промпт", callback_data="show_full_mp"),
+            InlineKeyboardButton(text="🎨 Промпт форматтера", callback_data="show_full_fmt")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -250,7 +253,6 @@ FREE_TEXT_STATES = [
 
 @dp.message(StateFilter(*FREE_TEXT_STATES), F.text.in_(RESERVED_MENU_TEXTS))
 async def reserved_text_guard(message: Message, state: FSMContext):
-
     await state.clear()
     raise SkipHandler
 
@@ -412,7 +414,7 @@ async def ask_gemini_finish(message: Message, state: FSMContext):
         active_generations.pop(user_id, None)
 
 
-# --- НАСТРОЙКА ОТПРАВКИ (ИЕРАРХИЧЕСКОЕ МЕНЮ) ---
+# --- НАСТРОЙКА ОТПРАВКИ ---
 
 @dp.message(F.text.in_(["⚙️ Настройка отправки", "◀️ Назад к выбору промпта"]))
 async def menu_prompt_settings(message: Message, state: FSMContext):
@@ -718,7 +720,7 @@ async def show_info(message: Message):
             f"📌 Состояние: {status_str}\n"
             f"👥 Всего подписчиков: {len(users)}\n"
             f"🌍 Часовой пояс: {html.escape(str(settings.get('timezone')))}\n"
-            f"🤖 Модель Gemini (генерация): <code>{html.escape(gemini.model_name)}</code>\n\n"
+            f"🤖 Модель генерации: <code>{html.escape(gemini.model_name)}</code>\n\n"
             f"📋 <b>1. 1W ликвидность (еженедельно):</b>\n"
             f"⏰ {DAY_NAMES[day1_idx]} в {settings.get('time_1')}\n"
             f"💬 {p1_preview}\n\n"
@@ -732,7 +734,7 @@ async def show_info(message: Message):
             f"⏰ {day4_num}-е число месяца в {settings.get('time_4')}\n"
             f"💬 {p4_preview}\n\n"
             f"🧙‍♂️ <b>Мастер-промпт:</b> {mp_preview}\n\n"
-            f"🔍 Развернуть / настроить промпты:"
+            f"🔍 Развернуть / просмотреть промпты:"
         )
         
         await message.answer(text, reply_markup=get_status_inline_keyboard(), parse_mode="HTML")
@@ -749,6 +751,28 @@ async def show_full_prompt_process(call: CallbackQuery):
         await render_master_prompt_menu(call)
         return
 
+    # Просмотр системного промпта форматтера
+    if target == "fmt":
+        val = FORMATTER_SYSTEM_INSTRUCTION.strip()
+        formatter_model = os.getenv("FORMATTER_GEMINI_MODEL", "gemini-3.5-flash")
+        heading = "🎨 Промпт форматирования (TextFormatter)"
+        chunks = split_message(val, max_length=3500)
+        total = len(chunks)
+
+        for i, chunk in enumerate(chunks, start=1):
+            h = heading if total == 1 else f"{heading} (часть {i}/{total})"
+            formatted_chunk = f"<pre><code>{html.escape(chunk)}</code></pre>"
+            msg = f"<b>{html.escape(h)}</b>\n\n{formatted_chunk}"
+            if i == total:
+                msg += f"\n\nℹ️ <i>Этот системный промпт используется вспомогательной моделью <code>{html.escape(formatter_model)}</code> для разметки ответов в Telegram Rich Message (Markdown-таблицы, списки, выделения).</i>"
+
+            try:
+                await call.message.answer(msg, parse_mode="HTML")
+            except Exception as e:
+                logging.warning(f"⚠️ Ошибка отправки текста форматтера ({e!r}).")
+                await call.message.answer(f"{h}\n\n{chunk}")
+        return
+
     settings = get_global_settings()
     titles = {
         "p1": "📌 Полный текст промпта «1W ликвидность»",
@@ -763,8 +787,6 @@ async def show_full_prompt_process(call: CallbackQuery):
 
     val = settings.get(keys[target], "").strip() or "Промпт не задан."
 
-    # Это обычный технический просмотр текста промпта (не итоговый AI-ответ),
-    # поэтому отправляем простым sendMessage с HTML-разметкой <pre><code> — без Rich Message.
     chunks = split_message(val, max_length=3500)
     total = len(chunks)
 
@@ -833,7 +855,7 @@ async def toggle_pause(message: Message):
     await message.answer(msg, reply_markup=kb)
 
 async def main():
-    init_default_prompts_if_empty()
+    sync_prompts_from_code()
     
     scheduler.start()
     scheduler.schedule_global_tasks()
