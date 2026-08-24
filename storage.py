@@ -13,7 +13,7 @@ DATA_FILE = os.path.join(DATA_DIR, "data.json")
 BAK_FILE = os.path.join(DATA_DIR, "data.json.bak")
 TMP_FILE = os.path.join(DATA_DIR, "data.json.tmp")
 
-DAILY_TOKEN_LIMIT = 35000
+DAILY_TOKEN_LIMIT = 100000
 
 DEFAULT_MASTER_PROMPT = (
     "Ты — профессионал по банковскому казначейству, управлению ликвидностью и ALM в российском банке.\n\n"
@@ -264,6 +264,7 @@ def update_global_settings(new_settings: dict):
     save_data(data)
 
 def sync_prompts_from_code():
+    """Синхронизирует промпты из кода в data.json при старте бота."""
     data = load_data()
     data["settings"]["prompt_1"] = PROMPT_1
     data["settings"]["prompt_2"] = PROMPT_2
@@ -272,6 +273,7 @@ def sync_prompts_from_code():
     data["settings"]["master_prompt"] = DEFAULT_MASTER_PROMPT
     save_data(data)
     logging.info("📝 Промпты и Мастер-промпт успешно синхронизированы из исходного кода.")
+
 def register_user(user_id: int, username: str = None, first_name: str = None, last_name: str = None):
     data = load_data()
     if user_id not in data.get("users", []):
