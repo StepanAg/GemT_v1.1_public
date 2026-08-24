@@ -52,14 +52,14 @@ class GeminiWrapper:
             logging.warning(f"⚠️ Не удалось извлечь grounding sources: {e}")
         return ""
 
-    async def generate(self, prompt: str, is_scheduled: bool = False) -> str:
+    async def generate(self, prompt: str, is_scheduled: bool = False, use_master_prompt: bool = False) -> str:
         """Отправляет запрос в Gemini API, а затем красиво форматирует результат."""
         can_proceed, error_msg = check_token_limit(is_scheduled=is_scheduled)
         if not can_proceed:
             raise RuntimeError(error_msg)
 
         settings = get_global_settings()
-        master_prompt = settings.get("master_prompt", "").strip()
+        master_prompt = settings.get("master_prompt", "").strip() if use_master_prompt else ""
 
         config_kwargs = {"tools": [self.google_search_tool]}
         if master_prompt:
