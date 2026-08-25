@@ -13,7 +13,7 @@ DATA_FILE = os.path.join(DATA_DIR, "data.json")
 BAK_FILE = os.path.join(DATA_DIR, "data.json.bak")
 TMP_FILE = os.path.join(DATA_DIR, "data.json.tmp")
 
-DAILY_TOKEN_LIMIT = 100000
+DAILY_TOKEN_LIMIT = 35000
 
 DEFAULT_MASTER_PROMPT = (
     "Ты — профессионал по банковскому казначейству, управлению ликвидностью и ALM в российском банке.\n\n"
